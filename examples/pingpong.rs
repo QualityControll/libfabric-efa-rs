@@ -4,7 +4,7 @@
 //! The client sends a "ping" message and receives a "pong" response.
 
 use eyre::Result;
-use libfabric_efa_rs::{AddressExchangeChannel, FabricEndpoint};
+use libfabric_rs::{AddressExchangeChannel, FabricEndpoint};
 
 const MESSAGE_SIZE: usize = 64;
 const PING_COUNT: usize = 10;
