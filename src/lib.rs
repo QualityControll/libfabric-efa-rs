@@ -25,17 +25,13 @@
 //! ```
 
 use eyre::{bail, ensure, Context, Result};
+use ofi_libfabric_sys::bindgen as ffi;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::ptr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-#[allow(warnings, clippy::all)]
-#[allow(non_upper_case_globals, non_camel_case_types, non_snake_case)]
-mod ffi {
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-}
 
 /// Default TCP port for control channel (address exchange)
 pub const CONTROL_PORT: u16 = 9229;
@@ -148,19 +144,19 @@ impl Drop for FabricEndpoint {
     fn drop(&mut self) {
         unsafe {
             if !self.ep.is_null() {
-                ffi::wrap_fi_close(&mut (*self.ep).fid as *mut ffi::fid);
+                ffi::fi_close(&mut (*self.ep).fid as *mut ffi::fid);
             }
             if !self.av.is_null() {
-                ffi::wrap_fi_close(&mut (*self.av).fid as *mut ffi::fid);
+                ffi::fi_close(&mut (*self.av).fid as *mut ffi::fid);
             }
             if !self.cq.is_null() {
-                ffi::wrap_fi_close(&mut (*self.cq).fid as *mut ffi::fid);
+                ffi::fi_close(&mut (*self.cq).fid as *mut ffi::fid);
             }
             if !self.domain.is_null() {
-                ffi::wrap_fi_close(&mut (*self.domain).fid as *mut ffi::fid);
+                ffi::fi_close(&mut (*self.domain).fid as *mut ffi::fid);
             }
             if !self.fabric.is_null() {
-                ffi::wrap_fi_close(&mut (*self.fabric).fid as *mut ffi::fid);
+                ffi::fi_close(&mut (*self.fabric).fid as *mut ffi::fid);
             }
             if !self.info.is_null() {
                 ffi::fi_freeinfo(self.info);
@@ -202,19 +198,19 @@ impl FabricEndpoint {
                 fn drop(&mut self) {
                     unsafe {
                         if !self.ep.is_null() {
-                            ffi::wrap_fi_close(&mut (*self.ep).fid as *mut ffi::fid);
+                            ffi::fi_close(&mut (*self.ep).fid as *mut ffi::fid);
                         }
                         if !self.av.is_null() {
-                            ffi::wrap_fi_close(&mut (*self.av).fid as *mut ffi::fid);
+                            ffi::fi_close(&mut (*self.av).fid as *mut ffi::fid);
                         }
                         if !self.cq.is_null() {
-                            ffi::wrap_fi_close(&mut (*self.cq).fid as *mut ffi::fid);
+                            ffi::fi_close(&mut (*self.cq).fid as *mut ffi::fid);
                         }
                         if !self.domain.is_null() {
-                            ffi::wrap_fi_close(&mut (*self.domain).fid as *mut ffi::fid);
+                            ffi::fi_close(&mut (*self.domain).fid as *mut ffi::fid);
                         }
                         if !self.fabric.is_null() {
-                            ffi::wrap_fi_close(&mut (*self.fabric).fid as *mut ffi::fid);
+                            ffi::fi_close(&mut (*self.fabric).fid as *mut ffi::fid);
                         }
                         if !self.info.is_null() {
                             ffi::fi_freeinfo(self.info);
@@ -226,7 +222,7 @@ impl FabricEndpoint {
                 }
             }
 
-            let hints = ffi::wrap_fi_allocinfo();
+            let hints = ffi::fi_allocinfo();
             if hints.is_null() {
                 bail!("fi_allocinfo failed");
             }
@@ -242,7 +238,7 @@ impl FabricEndpoint {
             };
 
             let provider_name = CString::new("efa").unwrap();
-            (*(*hints).fabric_attr).prov_name = provider_name.as_ptr() as *mut u8;
+            (*(*hints).fabric_attr).prov_name = provider_name.as_ptr() as *mut i8;
             std::mem::forget(provider_name);
 
             (*(*hints).ep_attr).type_ = ffi::fi_ep_type_FI_EP_RDM;
@@ -279,14 +275,14 @@ impl FabricEndpoint {
             guard.fabric = fabric;
 
             let mut domain: *mut ffi::fid_domain = ptr::null_mut();
-            let ret = ffi::wrap_fi_domain(fabric, info_ptr, &mut domain, ptr::null_mut());
+            let ret = ffi::fi_domain(fabric, info_ptr, &mut domain, ptr::null_mut());
             if ret != 0 {
                 bail!("fi_domain failed: {}", ret);
             }
             guard.domain = domain;
 
             let mut ep: *mut ffi::fid_ep = ptr::null_mut();
-            let ret = ffi::wrap_fi_endpoint(domain, info_ptr, &mut ep, ptr::null_mut());
+            let ret = ffi::fi_endpoint(domain, info_ptr, &mut ep, ptr::null_mut());
             if ret != 0 {
                 bail!("fi_endpoint failed: {}", ret);
             }
@@ -297,13 +293,13 @@ impl FabricEndpoint {
             cq_attr.format = ffi::fi_cq_format_FI_CQ_FORMAT_DATA;
 
             let mut cq: *mut ffi::fid_cq = ptr::null_mut();
-            let ret = ffi::wrap_fi_cq_open(domain, &mut cq_attr, &mut cq, ptr::null_mut());
+            let ret = ffi::fi_cq_open(domain, &mut cq_attr, &mut cq, ptr::null_mut());
             if ret != 0 {
                 bail!("fi_cq_open failed: {}", ret);
             }
             guard.cq = cq;
 
-            let ret = ffi::wrap_fi_ep_bind(
+            let ret = ffi::fi_ep_bind(
                 ep,
                 &mut (*cq).fid as *mut ffi::fid,
                 (ffi::FI_SEND | ffi::FI_RECV) as u64,
@@ -317,18 +313,18 @@ impl FabricEndpoint {
             av_attr.count = 64;
 
             let mut av: *mut ffi::fid_av = ptr::null_mut();
-            let ret = ffi::wrap_fi_av_open(domain, &mut av_attr, &mut av, ptr::null_mut());
+            let ret = ffi::fi_av_open(domain, &mut av_attr, &mut av, ptr::null_mut());
             if ret != 0 {
                 bail!("fi_av_open failed: {}", ret);
             }
             guard.av = av;
 
-            let ret = ffi::wrap_fi_ep_bind(ep, &mut (*av).fid as *mut ffi::fid, 0);
+            let ret = ffi::fi_ep_bind(ep, &mut (*av).fid as *mut ffi::fid, 0);
             if ret != 0 {
                 bail!("fi_ep_bind av failed: {}", ret);
             }
 
-            let ret = ffi::wrap_fi_enable(ep);
+            let ret = ffi::fi_enable(ep);
             if ret != 0 {
                 bail!("fi_enable failed: {}", ret);
             }
@@ -392,7 +388,7 @@ impl FabricEndpoint {
                 let cq = cq as *mut ffi::fid_cq;
 
                 loop {
-                    let ret = ffi::wrap_fi_send(
+                    let ret = ffi::fi_send(
                         ep,
                         buf.as_ptr() as *const libc::c_void,
                         buf.len(),
@@ -407,12 +403,12 @@ impl FabricEndpoint {
                         bail!("fi_send failed: {}", ret);
                     }
 
-                    ffi::wrap_fi_cq_read(cq, ptr::null_mut(), 0);
+                    ffi::fi_cq_read(cq, ptr::null_mut(), 0);
                 }
 
                 let mut comp: ffi::fi_cq_data_entry = std::mem::zeroed();
                 loop {
-                    let ret = ffi::wrap_fi_cq_read(
+                    let ret = ffi::fi_cq_read(
                         cq,
                         &mut comp as *mut ffi::fi_cq_data_entry as *mut libc::c_void,
                         1,
@@ -470,7 +466,7 @@ impl FabricEndpoint {
                 let cq = cq as *mut ffi::fid_cq;
 
                 loop {
-                    let ret = ffi::wrap_fi_recv(
+                    let ret = ffi::fi_recv(
                         ep,
                         buf.as_mut_ptr() as *mut libc::c_void,
                         buf.len(),
@@ -485,12 +481,12 @@ impl FabricEndpoint {
                         bail!("fi_recv failed: {}", ret);
                     }
 
-                    ffi::wrap_fi_cq_read(cq, ptr::null_mut(), 0);
+                    ffi::fi_cq_read(cq, ptr::null_mut(), 0);
                 }
 
                 let mut comp: ffi::fi_cq_data_entry = std::mem::zeroed();
                 loop {
-                    let ret = ffi::wrap_fi_cq_read(
+                    let ret = ffi::fi_cq_read(
                         cq,
                         &mut comp as *mut ffi::fi_cq_data_entry as *mut libc::c_void,
                         1,
@@ -521,7 +517,7 @@ impl FabricEndpoint {
             let mut local_addr: Vec<u8> = vec![0; 128];
             let mut local_addrlen: libc::size_t = local_addr.len();
 
-            let ret = ffi::wrap_fi_getname(
+            let ret = ffi::fi_getname(
                 &mut (*self.ep).fid as *mut ffi::fid,
                 local_addr.as_mut_ptr() as *mut libc::c_void,
                 &mut local_addrlen,
@@ -563,7 +559,7 @@ impl FabricEndpoint {
     pub fn insert_peer(&mut self, peer_addr: &FabricAddress) -> Result<PeerId> {
         unsafe {
             let mut fi_addr: ffi::fi_addr_t = 0;
-            let ret = ffi::wrap_fi_av_insert(
+            let ret = ffi::fi_av_insert(
                 self.av,
                 peer_addr.as_bytes().as_ptr() as *const libc::c_void,
                 1,

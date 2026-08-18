@@ -12,15 +12,11 @@ categories = ["network-programming", "asynchronous"]
 
 [dependencies]
 tokio = { version = "1.40", features = ["net", "rt", "sync", "io-util", "time"] }
-libc = "0.2"
 eyre = "0.6"
 serde = { version = "1.0", features = ["derive"] }
+ofi-libfabric-sys = "0.1.0"
+libc = "0.2.189"
 
 [dev-dependencies]
 clap = { version = "4.4", features = ["derive"] }
 tokio = { version = "1.40", features = ["full"] }
-
-[build-dependencies]
-bindgen = "0.72.0"
-cc = "1.2"
-pkg-config = "0.3"
