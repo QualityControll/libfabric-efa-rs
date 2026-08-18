@@ -1,7 +1,7 @@
 // EFA RDM Benchmark Tool - replica of fi_pingpong
 use clap::Parser;
 use eyre::Result;
-use libfabric_rs::{AddressExchangeChannel, FabricEndpoint, PeerId};
+use libfabric_efa_rs::{AddressExchangeChannel, FabricEndpoint, PeerId};
 use std::time::Instant;
 
 const WARMUP_ITERATIONS: usize = 10;
