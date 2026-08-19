@@ -318,11 +318,6 @@ impl FabricEndpoint {
                 }
             }
 
-            let hints = ffi::fi_allocinfo();
-            if hints.is_null() {
-                bail!("fi_allocinfo failed");
-            }
-
             let mut guard = ResourceGuard {
                 fabric: ptr::null_mut(),
                 domain: ptr::null_mut(),
