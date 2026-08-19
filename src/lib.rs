@@ -1095,11 +1095,6 @@ mod tests {
 
         println!("Connected to server at {}\n", server_addr);
 
-        let ep_clone = endpoint.clone();
-        let _ = tokio::spawn(async move {
-            let _ = ep_clone.read_cq().await;
-        });
-
         // Ping-pong loop
         let mut buf = vec![0u8; MESSAGE_SIZE];
 
