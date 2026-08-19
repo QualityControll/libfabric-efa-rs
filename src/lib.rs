@@ -824,11 +824,11 @@ impl FabricEndpointBuilder {
             let mut info_ptr = std::ptr::null_mut();
             let port_str = self.port.to_string();
             let ret = ffi::fi_getinfo(
-            version,
-            std::ptr::null_mut(),
-        port_str.as_ptr() as *const i8,
-            0,
-            self.hints.ptr.as_ptr(),
+                version, 
+                std::ptr::null_mut(),
+                port_str.as_ptr() as *const i8,
+                0,
+                self.hints.ptr.as_ptr(),
                 &mut info_ptr,
             );
 
