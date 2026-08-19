@@ -141,8 +141,6 @@ impl Drop for Info {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PeerId(pub ffi::fi_addr_t);
 
-
-#[derive(Clone)]
 struct CompletionQueueFd(RawFd);
 
 impl CompletionQueueFd {
@@ -428,7 +426,7 @@ impl FabricEndpoint {
     /// See https://manpages.debian.org/stretch/libfabric-dev/fi_trywait.3.en.html
     pub async fn read_cq(&self) -> Result<()> {
         let cq_fd = CompletionQueueFd::new(self.inner.cq)?;
-        let fd = AsyncFd::new(cq_fd.clone())?;
+        let fd = AsyncFd::new(cq_fd)?;
         loop {
             if unsafe { cq_waitable(&self.inner) } {
                 //we can safely wait on the fd
