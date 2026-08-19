@@ -149,7 +149,10 @@ impl CompletionQueueFd {
     fn new(cq: *mut ffi::fid_cq) -> Result<Self> {
         unsafe {
             let mut fd: RawFd = -1;
-            let ret = ffi::fi_control(&mut (*cq).fid as *mut ffi::fid, ffi::FI_GETWAIT as i32, &mut fd as *mut i32 as *mut c_void);
+            let ret = ffi::fi_control(
+                &mut (*cq).fid as *mut ffi::fid, 
+                ffi::FI_GETWAIT as i32, 
+                &mut fd as *mut i32 as *mut c_void);
             if ret != 0 {
                 bail!("fi_control failed");
             }
@@ -182,14 +185,33 @@ unsafe fn read_cq_entry(resources: &FabricEndpointResources) -> CqReadResult {
     let ret = ffi::fi_cq_read(
             resources.cq,
             &mut comp as *mut ffi::fi_cq_data_entry as *mut libc::c_void,
-            1);
-
-    if ret == 1 {
+            1,
+        );
+    if ret > 0 {
        return CqReadResult::CqReadSuccess(comp);
     } else if ret == EAGAIN_ERROR {
         return CqReadResult::CqErrorAgain();
     } else {
        return CqReadResult::CqError();        
+    }
+}
+
+fn read_cq_entries(resources: &FabricEndpointResources) {
+    loop {
+        let res = unsafe { read_cq_entry(&resources) };
+        match res {
+            CqReadResult::CqReadSuccess(entry) => {
+               let ctx = entry.op_context;
+               let tx = unsafe { std::ptr::read(ctx as *mut Sender<usize>) };
+               let _ = tx.send(entry.len);
+            },
+            CqReadResult::CqErrorAgain() => {
+               break;
+            },
+            CqReadResult::CqError() => {
+               break;
+            }
+        }
     }
 }
 
@@ -335,6 +357,7 @@ impl FabricEndpoint {
             let mut cq_attr: ffi::fi_cq_attr = std::mem::zeroed();
             cq_attr.size = 128;
             cq_attr.format = ffi::fi_cq_format_FI_CQ_FORMAT_DATA;
+            cq_attr.wait_obj = ffi::fi_wait_obj_FI_WAIT_FD;
 
             let mut cq: *mut ffi::fid_cq = ptr::null_mut();
             let ret = ffi::fi_cq_open(domain, &mut cq_attr, &mut cq, ptr::null_mut());
@@ -403,26 +426,15 @@ impl FabricEndpoint {
         loop {
             if unsafe { cq_waitable(&self.inner) } {
                 //we can safely wait on the fd
-                let _ = fd.readable().await?;
-            }
-
-            loop {
-                let res = unsafe { read_cq_entry(&self.inner) };
-                match res {
-                    CqReadResult::CqReadSuccess(entry) => {
-                        let ctx = entry.op_context;
-                        let tx = unsafe { std::ptr::read(ctx as *mut Sender<usize>) };
-                        let _ = tx.send(entry.len);
-                    },
-                    CqReadResult::CqErrorAgain() => {
-                        break;
-                    },
-                    CqReadResult::CqError() => {
-                        bail!("read_cq_entry failed");
+                let mut guard = fd.readable().await?;
+                match guard.try_io(|_| Ok(read_cq_entries(&self.inner))) {
+                    _ => {
                     }
                 }
+                guard.clear_ready();
+            } else {
+                read_cq_entries(&self.inner);
             }
-
         }
     }
 
@@ -452,18 +464,19 @@ impl FabricEndpoint {
     /// buf = endpoint.send_to(peer, buf).await?;
     /// ```
     pub async fn send_to(&self, peer: PeerId, buf: Vec<u8>) -> Result<Vec<u8>> {
-        let ep = self.inner.ep as usize;
-        let fi_addr = peer.0;
 
         let (mut tx, rx) = oneshot::channel::<usize>();
         let op_ctx: *mut _ = &mut tx;
+
+        let ep = self.inner.ep as usize;
         let ep = ep as *mut ffi::fid_ep;
+
         let ret = unsafe { ffi::fi_send(
             ep,
             buf.as_ptr() as *const libc::c_void,
             buf.len(),
             ptr::null_mut(),
-            fi_addr,
+            peer.0,
             op_ctx as *mut c_void,
         ) };
         if ret == 0 {
@@ -822,11 +835,11 @@ impl FabricEndpointBuilder {
         unsafe {
             let version = ffi::fi_version();
             let mut info_ptr = std::ptr::null_mut();
-            let port_str = self.port.to_string();
+            let port_str = CString::new(self.port.to_string()).unwrap();
             let ret = ffi::fi_getinfo(
                 version, 
                 std::ptr::null_mut(),
-                port_str.as_ptr() as *const i8,
+                port_str.as_ptr(),
                 0,
                 self.hints.ptr.as_ptr(),
                 &mut info_ptr,
@@ -839,7 +852,7 @@ impl FabricEndpointBuilder {
                     NonNull::new(info_ptr).expect("info ptr was null!"));
             let endpoint = FabricEndpoint::new(info)?;
             let ep_clone = endpoint.clone();
-            let _ = tokio::spawn(async move {
+            tokio::spawn(async move {
                 let _ = ep_clone.read_cq().await;
             });
             Ok(endpoint)
