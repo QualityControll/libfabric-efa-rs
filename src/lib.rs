@@ -27,9 +27,10 @@
 use eyre::{bail, ensure, Context, Result};
 use ofi_libfabric_sys::bindgen as ffi;
 use serde::{Deserialize, Serialize};
-use std::ffi::{CStr, CString, c_void};
+use std::ffi::{CString, c_void};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::ptr;
+use std::ptr::NonNull;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::unix::AsyncFd;
@@ -41,7 +42,7 @@ use tokio::sync::oneshot::{Sender};
 /// Default TCP port for control channel (address exchange)
 pub const CONTROL_PORT: u16 = 9229;
 
-const DEFAULT_PORT: &str = "9228";
+pub const DEFAULT_PORT: u16 = 9228;
 const EAGAIN_ERROR: isize = -(ffi::FI_EAGAIN as i32) as isize;
 
 /// Compact, serializable representation of a libfabric endpoint address.
@@ -93,6 +94,37 @@ impl AsRef<[u8]> for FabricAddress {
         self.as_bytes()
     }
 }
+
+
+pub struct Info {
+    ptr: NonNull<ffi::fi_info>
+}
+
+impl Info {
+    pub fn new() -> Self {
+        Self {
+            ptr: NonNull::new(
+            unsafe {
+                ffi::fi_allocinfo()
+            }).expect("Failed to allocate info")
+        }
+    }
+
+    pub fn new_from(info: NonNull<ffi::fi_info>) -> Self {
+        Self {
+            ptr: info
+        }
+    }
+}
+
+impl Drop for Info {
+    fn drop(&mut self) {
+        unsafe {
+            ffi::fi_freeinfo(self.ptr.as_ptr());
+        }
+    }
+}
+
 
 /// Identifier for a peer in the address vector.
 ///
@@ -184,8 +216,6 @@ struct FabricEndpointResources {
     ep: *mut ffi::fid_ep,
     av: *mut ffi::fid_av,
     cq: *mut ffi::fid_cq,
-    info: *mut ffi::fi_info,
-    hints: *mut ffi::fi_info,
 }
 
 // SAFETY: FabricEndpoint is configured with FI_THREAD_SAFE mode during initialization,
@@ -211,16 +241,11 @@ impl Drop for FabricEndpointResources {
             if !self.fabric.is_null() {
                 ffi::fi_close(&mut (*self.fabric).fid as *mut ffi::fid);
             }
-            if !self.info.is_null() {
-                ffi::fi_freeinfo(self.info);
-            }
-            if !self.hints.is_null() {
-                ffi::fi_freeinfo(self.hints);
-            }
         }
     }
 }
 
+#[derive(Clone)]
 pub struct FabricEndpoint {
     inner: Arc<FabricEndpointResources>
 }
@@ -240,7 +265,7 @@ impl FabricEndpoint {
     /// # Errors
     ///
     /// Returns an error if any libfabric initialization call fails.
-    pub fn new() -> Result<Self> {
+    fn new(info: Info) -> Result<Self> {
         unsafe {
             // RAII guard to ensure resources are cleaned up on any error path
             struct ResourceGuard {
@@ -249,8 +274,6 @@ impl FabricEndpoint {
                 ep: *mut ffi::fid_ep,
                 av: *mut ffi::fid_av,
                 cq: *mut ffi::fid_cq,
-                info: *mut ffi::fi_info,
-                hints: *mut ffi::fi_info,
             }
 
             impl Drop for ResourceGuard {
@@ -271,12 +294,6 @@ impl FabricEndpoint {
                         if !self.fabric.is_null() {
                             ffi::fi_close(&mut (*self.fabric).fid as *mut ffi::fid);
                         }
-                        if !self.info.is_null() {
-                            ffi::fi_freeinfo(self.info);
-                        }
-                        if !self.hints.is_null() {
-                            ffi::fi_freeinfo(self.hints);
-                        }
                     }
                 }
             }
@@ -292,56 +309,24 @@ impl FabricEndpoint {
                 ep: ptr::null_mut(),
                 av: ptr::null_mut(),
                 cq: ptr::null_mut(),
-                info: ptr::null_mut(),
-                hints,
             };
 
-            let provider_name = CString::new("efa").unwrap();
-            (*(*hints).fabric_attr).prov_name = provider_name.as_ptr() as *mut i8;
-            std::mem::forget(provider_name);
-
-            (*(*hints).ep_attr).type_ = ffi::fi_ep_type_FI_EP_RDM;
-            (*hints).caps = ffi::FI_MSG as u64;
-            (*(*hints).tx_attr).op_flags = ffi::FI_DELIVERY_COMPLETE as u64;
-
-            // Request thread-safe mode to enable concurrent access from multiple threads
-            (*(*hints).domain_attr).threading = ffi::fi_threading_FI_THREAD_SAFE;
-
-            let mut info_ptr: *mut ffi::fi_info = ptr::null_mut();
-            let port_cstr = CString::new(DEFAULT_PORT).unwrap();
-            let version = ffi::fi_version();
-            let ret = ffi::fi_getinfo(
-                version,
-                ptr::null(),
-                port_cstr.as_ptr(),
-                ffi::FI_SOURCE as u64,
-                hints,
-                &mut info_ptr,
-            );
-
-            if ret != 0 {
-                bail!("fi_getinfo failed: {}", ret);
-            }
-            guard.info = info_ptr;
-
-            let _prov_name = CStr::from_ptr((*(*info_ptr).fabric_attr).prov_name);
-
             let mut fabric: *mut ffi::fid_fabric = ptr::null_mut();
-            let ret = ffi::fi_fabric((*info_ptr).fabric_attr, &mut fabric, ptr::null_mut());
+            let ret = ffi::fi_fabric((*info.ptr.as_ptr()).fabric_attr, &mut fabric, ptr::null_mut());
             if ret != 0 {
                 bail!("fi_fabric failed: {}", ret);
             }
             guard.fabric = fabric;
 
             let mut domain: *mut ffi::fid_domain = ptr::null_mut();
-            let ret = ffi::fi_domain(fabric, info_ptr, &mut domain, ptr::null_mut());
+            let ret = ffi::fi_domain(fabric, info.ptr.as_ptr(), &mut domain, ptr::null_mut());
             if ret != 0 {
                 bail!("fi_domain failed: {}", ret);
             }
             guard.domain = domain;
 
             let mut ep: *mut ffi::fid_ep = ptr::null_mut();
-            let ret = ffi::fi_endpoint(domain, info_ptr, &mut ep, ptr::null_mut());
+            let ret = ffi::fi_endpoint(domain, info.ptr.as_ptr(), &mut ep, ptr::null_mut());
             if ret != 0 {
                 bail!("fi_endpoint failed: {}", ret);
             }
@@ -394,8 +379,6 @@ impl FabricEndpoint {
             let ep = guard.ep;
             let av = guard.av;
             let cq = guard.cq;
-            let info = guard.info;
-            let hints = guard.hints;
             std::mem::forget(guard);
 
             Ok(FabricEndpoint {
@@ -406,8 +389,6 @@ impl FabricEndpoint {
                     ep,
                     av,
                     cq,
-                    info,
-                    hints,
                 })  
             })
         }
@@ -758,4 +739,106 @@ impl AddressExchangeChannel {
 
         Ok(FabricAddress::from(addr))
     }
+}
+
+
+pub struct FabricEndpointBuilder {
+    hints: Info,
+    port: u16
+}
+
+
+impl FabricEndpointBuilder {
+
+    pub fn new() -> Self {
+        Self {
+           hints: Info::new(),
+           port: DEFAULT_PORT
+        }
+    }
+
+    pub fn port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
+    }
+
+    pub fn caps(mut self, caps: u32) -> Self {
+        let hints = unsafe { self.hints.ptr.as_mut() };
+        hints.caps = caps as u64;
+        self
+    }
+
+    pub fn mode(mut self, mode: u64) -> Self {
+        let hints = unsafe { self.hints.ptr.as_mut() };
+        hints.mode = mode;
+        self
+    }
+
+    pub fn ep_attr_type(mut self, typ: u32) -> Self {
+        let hints = unsafe { self.hints.ptr.as_mut() };
+        unsafe { (*hints.ep_attr).type_ = typ };
+        self
+    }
+
+    pub fn tx_attr_op_flags(mut self, flags: u32) -> Self {
+        let hints = unsafe { self.hints.ptr.as_mut() };
+        unsafe { (*hints.tx_attr).op_flags = flags as u64 };
+        self
+    }
+
+    pub fn domain_attr_mr_mode(mut self, mr_mode: u32) -> Self {
+        let hints = unsafe { self.hints.ptr.as_mut() };
+        unsafe { (*hints.domain_attr).mr_mode = mr_mode as i32 };
+        self
+    }
+
+    pub fn fabric_attr_prov_name(mut self, name: CString) -> Self {
+        let hints = unsafe { self.hints.ptr.as_mut() };
+        unsafe { (*hints.fabric_attr).prov_name = name.as_ptr() as *mut i8 };
+        std::mem::forget(name);
+        self
+    }
+
+    pub fn domain_attr_threading(mut self, mode: u32) -> Self {
+        let hints = unsafe { self.hints.ptr.as_mut() };
+        let _ = mode;
+        // Request thread-safe mode to enable concurrent access from multiple threads
+        unsafe {(*(*hints).domain_attr).threading = ffi::fi_threading_FI_THREAD_SAFE };
+        self
+    }
+
+    pub fn build_efa_default() -> Result<FabricEndpoint> {
+        let builder = FabricEndpointBuilder::new(); 
+        builder.fabric_attr_prov_name(CString::new("efa").unwrap())
+            .caps(ffi::FI_MSG)
+            .mode(ffi::FI_CONTEXT)
+            .ep_attr_type(ffi::fi_ep_type_FI_EP_RDM)
+            .tx_attr_op_flags(ffi::FI_DELIVERY_COMPLETE)
+            .domain_attr_threading(ffi::fi_threading_FI_THREAD_SAFE)
+            .build()
+    }
+
+    pub fn build(self) -> Result<FabricEndpoint> {
+        unsafe {
+            let version = ffi::fi_version();
+            let mut info_ptr = std::ptr::null_mut();
+            let port_str = self.port.to_string();
+            let ret = ffi::fi_getinfo(
+            version,
+            std::ptr::null_mut(),
+        port_str.as_ptr() as *const i8,
+            0,
+            self.hints.ptr.as_ptr(),
+                &mut info_ptr,
+            );
+
+            if ret != 0 {
+                bail!("fi_getinfo failed!");
+            }
+            let info = Info::new_from(
+                    NonNull::new(info_ptr).expect("info ptr was null!"));
+            Ok(FabricEndpoint::new(info)?)
+        }
+    }
+
 }

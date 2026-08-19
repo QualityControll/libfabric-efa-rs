@@ -4,7 +4,7 @@
 //! The client sends a "ping" message and receives a "pong" response.
 
 use eyre::Result;
-use libfabric_rs::{AddressExchangeChannel, FabricEndpoint};
+use libfabric_rs::{AddressExchangeChannel, FabricEndpointBuilder};
 
 const MESSAGE_SIZE: usize = 64;
 const PING_COUNT: usize = 10;
@@ -27,7 +27,7 @@ async fn run_client(server_addr: &str) -> Result<()> {
     println!("================\n");
 
     // Initialize endpoint
-    let mut endpoint = FabricEndpoint::new()?;
+    let mut endpoint = FabricEndpointBuilder::build_efa_default()?;
 
     // Connect and exchange addresses
     let mut channel = AddressExchangeChannel::connect(server_addr, None).await?;
@@ -35,6 +35,11 @@ async fn run_client(server_addr: &str) -> Result<()> {
     let peer_id = endpoint.insert_peer(&peer_addr)?;
 
     println!("Connected to server at {}\n", server_addr);
+
+    let ep_clone = endpoint.clone();
+    let _ = tokio::spawn(async move {
+        let _ = ep_clone.read_cq().await;
+    });
 
     // Ping-pong loop
     let mut buf = vec![0u8; MESSAGE_SIZE];
@@ -67,7 +72,7 @@ async fn run_server() -> Result<()> {
     println!("================\n");
 
     // Initialize endpoint
-    let mut endpoint = FabricEndpoint::new()?;
+    let mut endpoint = FabricEndpointBuilder::build_efa_default()?;
 
     // Listen and exchange addresses
     let mut channel = AddressExchangeChannel::listen(None).await?;
@@ -75,6 +80,11 @@ async fn run_server() -> Result<()> {
     let peer_id = endpoint.insert_peer(&peer_addr)?;
 
     println!("Waiting for ping messages...\n");
+
+    let ep_clone = endpoint.clone();
+    let _ = tokio::spawn(async move {
+        let _ = ep_clone.read_cq().await;
+    });
 
     // Ping-pong loop
     let mut buf = vec![0u8; MESSAGE_SIZE];

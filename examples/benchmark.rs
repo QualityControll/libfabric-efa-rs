@@ -1,7 +1,7 @@
 // EFA RDM Benchmark Tool - replica of fi_pingpong
 use clap::Parser;
 use eyre::Result;
-use libfabric_rs::{AddressExchangeChannel, FabricEndpoint, PeerId};
+use libfabric_rs::{AddressExchangeChannel, FabricEndpointBuilder, FabricEndpoint, PeerId};
 use std::time::Instant;
 
 const WARMUP_ITERATIONS: usize = 10;
@@ -26,7 +26,7 @@ struct Args {
 }
 
 async fn run_benchmark(
-    endpoint: &FabricEndpoint,
+    endpoint: FabricEndpoint,
     peer: PeerId,
     is_client: bool,
     min_size: usize,
@@ -40,6 +40,11 @@ async fn run_benchmark(
     } else {
         println!("\nServer ready for benchmark...");
     }
+
+    let ep_clone = endpoint.clone();
+    let _ = tokio::spawn(async move {
+      let _ = ep_clone.read_cq().await;
+    });
 
     let mut size = min_size;
     while size <= max_size {
@@ -145,7 +150,7 @@ async fn main() -> Result<()> {
     println!("Using tokio async runtime\n");
 
     // Initialize fabric endpoint
-    let mut endpoint = FabricEndpoint::new()?;
+    let mut endpoint = FabricEndpointBuilder::build_efa_default()?;
 
     // Setup control connection and exchange addresses
     let is_client = args.server_addr.is_some();
@@ -163,7 +168,7 @@ async fn main() -> Result<()> {
     println!("Peer configured: {:?}", peer_id);
 
     run_benchmark(
-        &endpoint,
+        endpoint,
         peer_id,
         is_client,
         args.min_size,
