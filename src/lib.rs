@@ -96,12 +96,12 @@ impl AsRef<[u8]> for FabricAddress {
 }
 
 
-pub struct Info {
+struct Info {
     ptr: NonNull<ffi::fi_info>
 }
 
 impl Info {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             ptr: NonNull::new(
             unsafe {
@@ -110,7 +110,7 @@ impl Info {
         }
     }
 
-    pub fn new_from(info: NonNull<ffi::fi_info>) -> Self {
+    fn new_from(info: NonNull<ffi::fi_info>) -> Self {
         Self {
             ptr: info
         }
