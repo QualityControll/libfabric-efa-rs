@@ -60,11 +60,16 @@ The library automatically detects libfabric using:
 
 ```rust
 use eyre::Result;
-use libfabric_rs::{AddressExchangeChannel, FabricEndpoint};
+use libfabric_rs::{AddressExchangeChannel, FabricEndpointBuilder};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut endpoint = FabricEndpoint::new()?;
+    let mut endpoint = FabricEndpointBuilder::new()
+        .fabric_attr_prov_name(CString::new("sockets").unwrap())
+        .caps(ffi::FI_MSG)
+        .mode(ffi::FI_CONTEXT)
+        .domain_attr_threading(ffi::fi_threading_FI_THREAD_SAFE)
+        .build()?;
     
     // Exchange addresses with server
     let mut channel = AddressExchangeChannel::connect("192.168.1.100", None).await?;
@@ -84,12 +89,17 @@ async fn main() -> Result<()> {
 
 ```rust
 use eyre::Result;
-use libfabric_rs::{AddressExchangeChannel, FabricEndpoint};
+use libfabric_rs::{AddressExchangeChannel, FabricEndpointBuilder};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut endpoint = FabricEndpoint::new()?;
-    
+    let mut endpoint = FabricEndpointBuilder::new()
+        .fabric_attr_prov_name(CString::new("sockets").unwrap())
+        .caps(ffi::FI_MSG)
+        .mode(ffi::FI_CONTEXT)
+        .domain_attr_threading(ffi::fi_threading_FI_THREAD_SAFE)
+        .build()?;
+
     // Exchange addresses with client
     let mut channel = AddressExchangeChannel::listen(None).await?;
     let peer_addr = channel.exchange(&endpoint, false).await?;

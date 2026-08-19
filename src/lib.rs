@@ -419,7 +419,13 @@ impl FabricEndpoint {
 
     
 
-
+    /// Reads the completion queue for asynchronous data transfer events. 
+    ///
+    /// User's submit async operations to libfabric using `send_to` and `recv`.
+    /// Operations are completed via completion queue events, and async awaiters are
+    /// notified using `tokio::sync::oneshot::channel` as async ops are completed.
+    ///
+    /// See https://manpages.debian.org/stretch/libfabric-dev/fi_trywait.3.en.html
     pub async fn read_cq(&self) -> Result<()> {
         let cq_fd = CompletionQueueFd::new(self.inner.cq)?;
         let fd = AsyncFd::new(cq_fd.clone())?;
@@ -763,6 +769,21 @@ pub struct FabricEndpointBuilder {
 
 impl FabricEndpointBuilder {
 
+    /// Creates a new FabricEndpointBuilder. Use this to create a FabricEndpoint based on
+    /// the user's required specifications.  Note that the default control_port `DEFAULT_PORT` is
+    /// set to 9228.
+    ///
+    /// # Arguments
+    /// 
+    /// None
+    ///
+    /// # Returns
+    ///
+    /// Self
+    ///
+    /// # Errors
+    ///
+    /// None
     pub fn new() -> Self {
         Self {
            hints: Info::new(),
@@ -770,41 +791,140 @@ impl FabricEndpointBuilder {
         }
     }
 
+    /// Sets the control_port for the FabricEndpoint to the port specified.
+    ///
+    /// # Arguments
+    /// 
+    /// * `self` - consumes self.
+    /// * `port` - the port to set the control_port to.
+    ///
+    /// # Returns
+    ///
+    /// self 
+    ///
+    /// # Errors
+    ///
+    /// None
     pub fn port(mut self, port: u16) -> Self {
         self.port = port;
         self
     }
 
+
+    /// Sets the hints caps for the FabricEndpoint to the capabilities flag specified.
+    ///
+    /// # Arguments
+    /// 
+    /// * `self` - consumes self.
+    /// * `caps` - the capabilities flag to set the caps to.  See ffi::FI_MSG.
+    ///
+    /// # Returns
+    ///
+    /// self 
+    ///
+    /// # Errors
+    ///
+    /// None
     pub fn caps(mut self, caps: u32) -> Self {
         let hints = unsafe { self.hints.ptr.as_mut() };
         hints.caps = caps as u64;
         self
     }
 
+    /// Sets the hints mode for the FabricEndpoint to the mode flag specified.
+    ///
+    /// # Arguments
+    /// 
+    /// * `self` - consumes self.
+    /// * `mode` - the mode flag to set the mode to.  See ffi::FI_CONTEXT.
+    ///
+    /// # Returns
+    ///
+    /// self 
+    ///
+    /// # Errors
+    ///
+    /// None
     pub fn mode(mut self, mode: u64) -> Self {
         let hints = unsafe { self.hints.ptr.as_mut() };
         hints.mode = mode;
         self
     }
 
+    /// Sets the hints ep_attr->type_ for the FabricEndpoint to the typ flag specified.
+    ///
+    /// # Arguments
+    /// 
+    /// * `self` - consumes self.
+    /// * `typ` - the mode flag to set the caps to.  See ffi::FI_CONTEXT.
+    ///
+    /// # Returns
+    ///
+    /// self 
+    ///
+    /// # Errors
+    ///
+    /// None
     pub fn ep_attr_type(mut self, typ: u32) -> Self {
         let hints = unsafe { self.hints.ptr.as_mut() };
         unsafe { (*hints.ep_attr).type_ = typ };
         self
     }
 
+    /// Sets the hints tx_attr->op_flags for the FabricEndpoint to the flags specified.
+    ///
+    /// # Arguments
+    /// 
+    /// * `self` - consumes self.
+    /// * `flags` - the tx_attr->op_flags value to set.  See ffi::FI_DELIVERY_COMPLETE.
+    ///
+    /// # Returns
+    ///
+    /// self 
+    ///
+    /// # Errors
+    ///
+    /// None
     pub fn tx_attr_op_flags(mut self, flags: u32) -> Self {
         let hints = unsafe { self.hints.ptr.as_mut() };
         unsafe { (*hints.tx_attr).op_flags = flags as u64 };
         self
     }
 
+    /// Sets the hints domain_attr->mr_mode for the FabricEndpoint to the mr_mode specified.
+    ///
+    /// # Arguments
+    /// 
+    /// * `self` - consumes self.
+    /// * `flags` - the domain_attr->mr_mode value to set.  See ffi::FI_MR_LOCAL.
+    ///
+    /// # Returns
+    ///
+    /// self 
+    ///
+    /// # Errors
+    ///
+    /// None
     pub fn domain_attr_mr_mode(mut self, mr_mode: u32) -> Self {
         let hints = unsafe { self.hints.ptr.as_mut() };
         unsafe { (*hints.domain_attr).mr_mode = mr_mode as i32 };
         self
     }
 
+    /// Sets the hints fabric_attr->prov_name for the FabricEndpoint to the name specified.
+    ///
+    /// # Arguments
+    /// 
+    /// * `self` - consumes self.
+    /// * `name` - the fabric_attr->prov_name value to set.  See efa, sockets, tcp, etc.
+    ///
+    /// # Returns
+    ///
+    /// self 
+    ///
+    /// # Errors
+    ///
+    /// None
     pub fn fabric_attr_prov_name(mut self, name: CString) -> Self {
         let hints = unsafe { self.hints.ptr.as_mut() };
         unsafe { (*hints.fabric_attr).prov_name = name.as_ptr() as *mut i8 };
@@ -812,6 +932,22 @@ impl FabricEndpointBuilder {
         self
     }
 
+    /// Sets the hints domain_attr->threading for the FabricEndpoint to the mode specified.
+    /// Note that to ensure thread safety, the user's argument is always ignored and 
+    /// FI_THREAD_SAFE is used to ensure proper synchronization to fabric resources.
+    ///
+    /// # Arguments
+    /// 
+    /// * `self` - consumes self.
+    /// * `name` - the fabric_attr->prov_name value to set.  See efa, sockets, tcp, etc.
+    ///
+    /// # Returns
+    ///
+    /// self 
+    ///
+    /// # Errors
+    ///
+    /// None
     pub fn domain_attr_threading(mut self, mode: u32) -> Self {
         let hints = unsafe { self.hints.ptr.as_mut() };
         let _ = mode;
@@ -820,6 +956,22 @@ impl FabricEndpointBuilder {
         self
     }
 
+
+    /// Builds a new FabricEndpoint using the EFA provider from libfabric.
+    ///
+    /// # Arguments
+    /// 
+    /// None
+    ///
+    /// # Returns
+    ///
+    /// Returns a FabricEndpoint if Ok.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if something fails during the process of creating fabric resources
+    /// necessary for the endpoint.  The user should analyze the arguments that were used
+    /// when building the FabricEndpoint.
     pub fn build_efa_default() -> Result<FabricEndpoint> {
         let builder = FabricEndpointBuilder::new(); 
         builder.fabric_attr_prov_name(CString::new("efa").unwrap())
@@ -831,6 +983,22 @@ impl FabricEndpointBuilder {
             .build()
     }
 
+
+    /// Builds a new FabricEndpoint if possible.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - consumes self
+    ///
+    /// # Returns
+    ///
+    /// Returns a FabricEndpoint if Ok.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if something fails during the process of creating fabric resources
+    /// necessary for the endpoint.  The user should analyze the arguments that were used
+    /// when building the FabricEndpoint.
     pub fn build(self) -> Result<FabricEndpoint> {
         unsafe {
             let version = ffi::fi_version();
