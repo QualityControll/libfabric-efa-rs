@@ -837,7 +837,12 @@ impl FabricEndpointBuilder {
             }
             let info = Info::new_from(
                     NonNull::new(info_ptr).expect("info ptr was null!"));
-            Ok(FabricEndpoint::new(info)?)
+            let endpoint = FabricEndpoint::new(info)?;
+            let ep_clone = endpoint.clone();
+            let _ = tokio::spawn(async move {
+                let _ = ep_clone.read_cq().await;
+            });
+            Ok(endpoint)
         }
     }
 

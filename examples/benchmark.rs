@@ -41,11 +41,6 @@ async fn run_benchmark(
         println!("\nServer ready for benchmark...");
     }
 
-    let ep_clone = endpoint.clone();
-    let _ = tokio::spawn(async move {
-      let _ = ep_clone.read_cq().await;
-    });
-
     let mut size = min_size;
     while size <= max_size {
         let mut buffer = vec![0u8; size];

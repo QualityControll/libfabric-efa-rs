@@ -81,11 +81,6 @@ async fn run_server() -> Result<()> {
 
     println!("Waiting for ping messages...\n");
 
-    let ep_clone = endpoint.clone();
-    let _ = tokio::spawn(async move {
-        let _ = ep_clone.read_cq().await;
-    });
-
     // Ping-pong loop
     let mut buf = vec![0u8; MESSAGE_SIZE];
 
