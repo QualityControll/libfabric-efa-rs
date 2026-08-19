@@ -470,15 +470,11 @@ impl FabricEndpoint {
     /// buf = endpoint.send_to(peer, buf).await?;
     /// ```
     pub async fn send_to(&self, peer: PeerId, buf: Vec<u8>) -> Result<Vec<u8>> {
-
         let (mut tx, rx) = oneshot::channel::<usize>();
         let op_ctx: *mut _ = &mut tx;
 
-        let ep = self.inner.ep as usize;
-        let ep = ep as *mut ffi::fid_ep;
-
         let ret = unsafe { ffi::fi_send(
-            ep,
+            self.inner.ep,
             buf.as_ptr() as *const libc::c_void,
             buf.len(),
             ptr::null_mut(),
@@ -526,12 +522,11 @@ impl FabricEndpoint {
     /// // buf now contains received data
     /// ```
     pub async fn recv(&self, mut buf: Vec<u8>) -> Result<Vec<u8>> {
-        let ep = self.inner.ep as usize;
-        let ep = ep as *mut ffi::fid_ep;
         let (mut tx, rx) = oneshot::channel::<usize>();
         let op_ctx: *mut _ = &mut tx;
+
         let ret = unsafe { ffi::fi_recv(
-            ep,
+            self.inner.ep,
             buf.as_mut_ptr() as *mut libc::c_void,
             buf.len(),
             ptr::null_mut(),
