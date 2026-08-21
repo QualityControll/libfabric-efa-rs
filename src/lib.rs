@@ -24,7 +24,7 @@
 //! }
 //! ```
 
-use eyre::{bail, ensure, Context, Result};
+use eyre::{bail, Context, Result};
 use ofi_libfabric_sys::bindgen as ffi;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CString, c_void};
@@ -188,6 +188,24 @@ impl AddressVector {
             0: NonNull::new(av).unwrap()
         })
     }
+
+    unsafe fn insert(&self, peer_addr: &FabricAddress) -> Result<PeerId> {
+        let mut fi_addr: ffi::fi_addr_t = 0;
+        let ret = ffi::fi_av_insert(
+            self.0.as_ptr(),
+            peer_addr.0.as_ptr() as *const libc::c_void,
+            1,
+            &mut fi_addr,
+            0,
+            ptr::null_mut(),
+        );
+
+        if ret != 1 {
+            bail!("fi_av_insert failed: {}", ret);
+        }
+        Ok(PeerId(fi_addr))
+    }
+
 }
 
 impl Drop for AddressVector {
@@ -198,6 +216,12 @@ impl Drop for AddressVector {
 
 
 struct CompletionQueue(NonNull<ffi::fid_cq>);
+
+enum CqReadResult {
+    CqReadSuccess(ffi::fi_cq_data_entry),
+    CqErrorAgain(),
+    CqError()
+}
 
 impl CompletionQueue {
     fn new(domain: &mut Domain) -> Result<Self> {
@@ -215,6 +239,49 @@ impl CompletionQueue {
             0: NonNull::new(cq).unwrap()
         })
     }
+
+    unsafe fn read_cq_entry(&self) -> CqReadResult {
+        let mut comp: ffi::fi_cq_data_entry = std::mem::zeroed();
+        let ret = ffi::fi_cq_read(
+                self.0.as_ptr(),
+                &mut comp as *mut ffi::fi_cq_data_entry as *mut libc::c_void,
+                1,
+            );
+        if ret > 0 {
+        return CqReadResult::CqReadSuccess(comp);
+        } else if ret == EAGAIN_ERROR {
+            return CqReadResult::CqErrorAgain();
+        } else {
+        return CqReadResult::CqError();        
+        }
+    }
+
+    fn read_cq_entries(&self) {
+        loop {
+            let res = unsafe { self.read_cq_entry() };
+            match res {
+                CqReadResult::CqReadSuccess(entry) => {
+                    let ctx = entry.op_context;
+                    let tx = unsafe { std::ptr::read(ctx as *mut Sender<usize>) };
+                    let _ = tx.send(entry.len);
+                },
+                CqReadResult::CqErrorAgain() => {
+                    break;
+                },
+                CqReadResult::CqError() => {
+                    break;
+                }
+            }
+        }
+    }
+
+    unsafe fn cq_waitable(&self, fabric: &Fabric) -> bool {
+        let cq_fid = &mut (*(self.0).as_ptr()).fid as *mut ffi::fid;
+        let mut fds: [*mut ffi::fid; 1] = [ cq_fid ];
+        let ret = ffi::fi_trywait(fabric.0.as_ptr(), fds.as_mut_ptr(), 1);
+        return ret == 0;
+    }
+
 }
 
 impl Drop for CompletionQueue {
@@ -263,53 +330,9 @@ impl AsRawFd for CompletionQueueFd {
     fn as_raw_fd(&self) -> RawFd { self.0 }
 }
 
-unsafe fn cq_waitable(resources: &FabricEndpointResources) -> bool {
-    let cq_fid = &mut (*(resources.cq.0).as_ptr()).fid as *mut ffi::fid;
-    let mut fds: [*mut ffi::fid; 1] = [ cq_fid ];
-    let ret = ffi::fi_trywait(resources.fabric.0.as_ptr(), fds.as_mut_ptr(), 1);
-    return ret == 0;
-}
 
-enum CqReadResult {
-    CqReadSuccess(ffi::fi_cq_data_entry),
-    CqErrorAgain(),
-    CqError()
-}
 
-unsafe fn read_cq_entry(resources: &FabricEndpointResources) -> CqReadResult {
-    let mut comp: ffi::fi_cq_data_entry = std::mem::zeroed();
-    let ret = ffi::fi_cq_read(
-            resources.cq.0.as_ptr(),
-            &mut comp as *mut ffi::fi_cq_data_entry as *mut libc::c_void,
-            1,
-        );
-    if ret > 0 {
-       return CqReadResult::CqReadSuccess(comp);
-    } else if ret == EAGAIN_ERROR {
-        return CqReadResult::CqErrorAgain();
-    } else {
-       return CqReadResult::CqError();        
-    }
-}
 
-fn read_cq_entries(resources: &FabricEndpointResources) {
-    loop {
-        let res = unsafe { read_cq_entry(&resources) };
-        match res {
-            CqReadResult::CqReadSuccess(entry) => {
-               let ctx = entry.op_context;
-               let tx = unsafe { std::ptr::read(ctx as *mut Sender<usize>) };
-               let _ = tx.send(entry.len);
-            },
-            CqReadResult::CqErrorAgain() => {
-               break;
-            },
-            CqReadResult::CqError() => {
-               break;
-            }
-        }
-    }
-}
 
 /// A fabric endpoint for RDMA communication.
 ///
@@ -394,16 +417,16 @@ impl FabricEndpoint {
         let cq_fd = CompletionQueueFd::new(self.0.cq.0.as_ptr())?;
         let fd = AsyncFd::new(cq_fd)?;
         loop {
-            if unsafe { cq_waitable(&self.0) } {
+            if unsafe { self.0.cq.cq_waitable(&self.0.fabric) } {
                 //we can safely wait on the fd
                 let mut guard = fd.readable().await?;
-                match guard.try_io(|_| Ok(read_cq_entries(&self.0))) {
+                match guard.try_io(|_| Ok(self.0.cq.read_cq_entries())) {
                     _ => {
                     }
                 }
                 guard.clear_ready();
             } else {
-                read_cq_entries(&self.0);
+                self.0.cq.read_cq_entries();
             }
         }
     }
@@ -561,21 +584,7 @@ impl FabricEndpoint {
     ///
     /// Returns an error if the address insertion fails.
     pub fn insert_peer(&mut self, peer_addr: &FabricAddress) -> Result<PeerId> {
-        unsafe {
-            let mut fi_addr: ffi::fi_addr_t = 0;
-            let ret = ffi::fi_av_insert(
-                self.0.av.0.as_ptr(),
-                peer_addr.0.as_ptr() as *const libc::c_void,
-                1,
-                &mut fi_addr,
-                0,
-                ptr::null_mut(),
-            );
-
-            ensure!(ret == 1, "fi_av_insert failed: {}", ret);
-
-            Ok(PeerId(fi_addr))
-        }
+        unsafe { self.0.av.insert(peer_addr) }
     }
 }
 
