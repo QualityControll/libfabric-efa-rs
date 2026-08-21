@@ -245,14 +245,13 @@ impl CompletionQueue {
         let ret = ffi::fi_cq_read(
                 self.0.as_ptr(),
                 &mut comp as *mut ffi::fi_cq_data_entry as *mut libc::c_void,
-                1,
-            );
+                1);
         if ret > 0 {
-        return CqReadResult::CqReadSuccess(comp);
+            return CqReadResult::CqReadSuccess(comp);
         } else if ret == EAGAIN_ERROR {
             return CqReadResult::CqErrorAgain();
         } else {
-        return CqReadResult::CqError();        
+            return CqReadResult::CqError();        
         }
     }
 
@@ -329,9 +328,6 @@ impl CompletionQueueFd {
 impl AsRawFd for CompletionQueueFd {
     fn as_raw_fd(&self) -> RawFd { self.0 }
 }
-
-
-
 
 
 /// A fabric endpoint for RDMA communication.
