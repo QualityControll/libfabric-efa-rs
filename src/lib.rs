@@ -52,58 +52,14 @@ const EAGAIN_ERROR: isize = -(ffi::FI_EAGAIN as i32) as isize;
 /// through any out-of-band channel (files, RPC, etc.) without relying on the
 /// auxiliary TCP helper provided in this crate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FabricAddress {
-    bytes: Vec<u8>,
-}
+pub struct FabricAddress(Vec<u8>);
 
-impl FabricAddress {
-    /// Creates a new address from raw bytes.
-    pub fn new(bytes: Vec<u8>) -> Self {
-        Self { bytes }
-    }
-
-    /// Returns the raw bytes of the address.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// Consumes the wrapper and returns the owned byte vector.
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.bytes
-    }
-
-    /// Returns the length in bytes.
-    pub fn len(&self) -> usize {
-        self.bytes.len()
-    }
-
-    /// Returns true if the address contains no bytes.
-    pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
-    }
-}
-
-impl From<Vec<u8>> for FabricAddress {
-    fn from(bytes: Vec<u8>) -> Self {
-        Self::new(bytes)
-    }
-}
-
-impl AsRef<[u8]> for FabricAddress {
-    fn as_ref(&self) -> &[u8] {
-        self.as_bytes()
-    }
-}
-
-
-struct Info {
-    ptr: NonNull<ffi::fi_info>
-}
+struct Info(NonNull<ffi::fi_info>);
 
 impl Info {
     fn new() -> Self {
         Self {
-            ptr: NonNull::new(
+            0: NonNull::new(
             unsafe {
                 ffi::fi_allocinfo()
             }).expect("Failed to allocate info")
@@ -112,7 +68,7 @@ impl Info {
 
     fn new_from(info: NonNull<ffi::fi_info>) -> Self {
         Self {
-            ptr: info
+            0: info
         }
     }
 }
@@ -120,7 +76,7 @@ impl Info {
 impl Drop for Info {
     fn drop(&mut self) {
         unsafe {
-            ffi::fi_freeinfo(self.ptr.as_ptr());
+            ffi::fi_freeinfo(self.0.as_ptr());
         }
     }
 }
@@ -227,9 +183,6 @@ fn read_cq_entries(resources: &FabricEndpointResources) {
 /// The EFA provider supports thread-safe operations, and all libfabric calls
 /// are internally synchronized.
 ///
-/// Operations like `send_to()` and `recv()` move work to blocking threads via
-/// `spawn_blocking`, so concurrent calls are safe and will not interfere with
-/// each other.
 struct FabricEndpointResources {
     fabric: *mut ffi::fid_fabric,
     domain: *mut ffi::fid_domain,
@@ -266,10 +219,7 @@ impl Drop for FabricEndpointResources {
 }
 
 #[derive(Clone)]
-pub struct FabricEndpoint {
-    inner: Arc<FabricEndpointResources>
-}
-
+pub struct FabricEndpoint(Arc<FabricEndpointResources>);
 
 
 impl FabricEndpoint {
@@ -327,21 +277,21 @@ impl FabricEndpoint {
             };
 
             let mut fabric: *mut ffi::fid_fabric = ptr::null_mut();
-            let ret = ffi::fi_fabric((*info.ptr.as_ptr()).fabric_attr, &mut fabric, ptr::null_mut());
+            let ret = ffi::fi_fabric((*info.0.as_ptr()).fabric_attr, &mut fabric, ptr::null_mut());
             if ret != 0 {
                 bail!("fi_fabric failed: {}", ret);
             }
             guard.fabric = fabric;
 
             let mut domain: *mut ffi::fid_domain = ptr::null_mut();
-            let ret = ffi::fi_domain(fabric, info.ptr.as_ptr(), &mut domain, ptr::null_mut());
+            let ret = ffi::fi_domain(fabric, info.0.as_ptr(), &mut domain, ptr::null_mut());
             if ret != 0 {
                 bail!("fi_domain failed: {}", ret);
             }
             guard.domain = domain;
 
             let mut ep: *mut ffi::fid_ep = ptr::null_mut();
-            let ret = ffi::fi_endpoint(domain, info.ptr.as_ptr(), &mut ep, ptr::null_mut());
+            let ret = ffi::fi_endpoint(domain, info.0.as_ptr(), &mut ep, ptr::null_mut());
             if ret != 0 {
                 bail!("fi_endpoint failed: {}", ret);
             }
@@ -398,7 +348,7 @@ impl FabricEndpoint {
             std::mem::forget(guard);
 
             Ok(FabricEndpoint {
-                inner: 
+                0: 
                 Arc::new(FabricEndpointResources {
                     fabric,
                     domain,
@@ -420,19 +370,19 @@ impl FabricEndpoint {
     ///
     /// See https://manpages.debian.org/stretch/libfabric-dev/fi_trywait.3.en.html
     pub async fn read_cq(&self) -> Result<()> {
-        let cq_fd = CompletionQueueFd::new(self.inner.cq)?;
+        let cq_fd = CompletionQueueFd::new(self.0.cq)?;
         let fd = AsyncFd::new(cq_fd)?;
         loop {
-            if unsafe { cq_waitable(&self.inner) } {
+            if unsafe { cq_waitable(&self.0) } {
                 //we can safely wait on the fd
                 let mut guard = fd.readable().await?;
-                match guard.try_io(|_| Ok(read_cq_entries(&self.inner))) {
+                match guard.try_io(|_| Ok(read_cq_entries(&self.0))) {
                     _ => {
                     }
                 }
                 guard.clear_ready();
             } else {
-                read_cq_entries(&self.inner);
+                read_cq_entries(&self.0);
             }
         }
     }
@@ -467,7 +417,7 @@ impl FabricEndpoint {
         let op_ctx: *mut _ = &mut tx;
 
         let ret = unsafe { ffi::fi_send(
-            self.inner.ep,
+            self.0.ep,
             buf.as_ptr() as *const libc::c_void,
             buf.len(),
             ptr::null_mut(),
@@ -519,7 +469,7 @@ impl FabricEndpoint {
         let op_ctx: *mut _ = &mut tx;
 
         let ret = unsafe { ffi::fi_recv(
-            self.inner.ep,
+            self.0.ep,
             buf.as_mut_ptr() as *mut libc::c_void,
             buf.len(),
             ptr::null_mut(),
@@ -551,7 +501,7 @@ impl FabricEndpoint {
             let mut local_addrlen: libc::size_t = local_addr.len();
 
             let ret = ffi::fi_getname(
-                &mut (*self.inner.ep).fid as *mut ffi::fid,
+                &mut (*self.0.ep).fid as *mut ffi::fid,
                 local_addr.as_mut_ptr() as *mut libc::c_void,
                 &mut local_addrlen,
             );
@@ -561,7 +511,7 @@ impl FabricEndpoint {
             }
 
             local_addr.resize(local_addrlen, 0);
-            Ok(FabricAddress::from(local_addr))
+            Ok(FabricAddress { 0: local_addr })
         }
     }
 
@@ -593,8 +543,8 @@ impl FabricEndpoint {
         unsafe {
             let mut fi_addr: ffi::fi_addr_t = 0;
             let ret = ffi::fi_av_insert(
-                self.inner.av,
-                peer_addr.as_bytes().as_ptr() as *const libc::c_void,
+                self.0.av,
+                peer_addr.0.as_ptr() as *const libc::c_void,
                 1,
                 &mut fi_addr,
                 0,
@@ -718,13 +668,13 @@ impl AddressExchangeChannel {
     }
 
     async fn write_address(&mut self, addr: &FabricAddress) -> Result<()> {
-        let len_bytes = (addr.len() as u64).to_le_bytes();
+        let len_bytes = (addr.0.len() as u64).to_le_bytes();
         self.stream
             .write_all(&len_bytes)
             .await
             .wrap_err("failed to send address length")?;
         self.stream
-            .write_all(addr.as_bytes())
+            .write_all(addr.0.as_slice())
             .await
             .wrap_err("failed to send address payload")?;
         Ok(())
@@ -744,7 +694,7 @@ impl AddressExchangeChannel {
             .await
             .wrap_err("failed to read address payload")?;
 
-        Ok(FabricAddress::from(addr))
+        Ok(FabricAddress { 0: addr })
     }
 }
 
@@ -814,7 +764,7 @@ impl FabricEndpointBuilder {
     ///
     /// None
     pub fn caps(mut self, caps: u32) -> Self {
-        let hints = unsafe { self.hints.ptr.as_mut() };
+        let hints = unsafe { self.hints.0.as_mut() };
         hints.caps = caps as u64;
         self
     }
@@ -834,7 +784,7 @@ impl FabricEndpointBuilder {
     ///
     /// None
     pub fn mode(mut self, mode: u64) -> Self {
-        let hints = unsafe { self.hints.ptr.as_mut() };
+        let hints = unsafe { self.hints.0.as_mut() };
         hints.mode = mode;
         self
     }
@@ -854,7 +804,7 @@ impl FabricEndpointBuilder {
     ///
     /// None
     pub fn ep_attr_type(mut self, typ: u32) -> Self {
-        let hints = unsafe { self.hints.ptr.as_mut() };
+        let hints = unsafe { self.hints.0.as_mut() };
         unsafe { (*hints.ep_attr).type_ = typ };
         self
     }
@@ -874,7 +824,7 @@ impl FabricEndpointBuilder {
     ///
     /// None
     pub fn tx_attr_op_flags(mut self, flags: u32) -> Self {
-        let hints = unsafe { self.hints.ptr.as_mut() };
+        let hints = unsafe { self.hints.0.as_mut() };
         unsafe { (*hints.tx_attr).op_flags = flags as u64 };
         self
     }
@@ -894,7 +844,7 @@ impl FabricEndpointBuilder {
     ///
     /// None
     pub fn domain_attr_mr_mode(mut self, mr_mode: u32) -> Self {
-        let hints = unsafe { self.hints.ptr.as_mut() };
+        let hints = unsafe { self.hints.0.as_mut() };
         unsafe { (*hints.domain_attr).mr_mode = mr_mode as i32 };
         self
     }
@@ -914,7 +864,7 @@ impl FabricEndpointBuilder {
     ///
     /// None
     pub fn fabric_attr_prov_name(mut self, name: CString) -> Self {
-        let hints = unsafe { self.hints.ptr.as_mut() };
+        let hints = unsafe { self.hints.0.as_mut() };
         unsafe { (*hints.fabric_attr).prov_name = name.as_ptr() as *mut i8 };
         std::mem::forget(name);
         self
@@ -963,7 +913,7 @@ impl FabricEndpointBuilder {
     /// when building the FabricEndpoint.
     pub fn build(mut self) -> Result<FabricEndpoint> {
         unsafe {
-            let hints = self.hints.ptr.as_mut();
+            let hints = self.hints.0.as_mut();
             (*(*hints).domain_attr).threading = ffi::fi_threading_FI_THREAD_SAFE;
 
             let version = ffi::fi_version();
@@ -974,7 +924,7 @@ impl FabricEndpointBuilder {
                 std::ptr::null_mut(),
                 port_str.as_ptr(),
                 0,
-                self.hints.ptr.as_ptr(),
+                self.hints.0.as_ptr(),
                 &mut info_ptr,
             );
 
