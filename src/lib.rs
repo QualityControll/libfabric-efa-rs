@@ -326,13 +326,13 @@ fn read_cq_entries(resources: &FabricEndpointResources) {
 /// are internally synchronized.
 ///
 struct FabricEndpointResources {
-    fabric: Fabric,
+    cq: CompletionQueue,
+    av: AddressVector,
+    ep: Endpoint,
     //domain isn't used, but we shouldn't drop it!
     #[allow(dead_code)] 
     domain: Domain,
-    ep: Endpoint,
-    av: AddressVector,
-    cq: CompletionQueue,
+    fabric: Fabric,
 }
 
 // SAFETY: FabricEndpoint is configured with FI_THREAD_SAFE mode during initialization,
