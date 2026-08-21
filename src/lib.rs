@@ -920,31 +920,6 @@ impl FabricEndpointBuilder {
         self
     }
 
-    /// Sets the hints domain_attr->threading for the FabricEndpoint to the mode specified.
-    /// Note that to ensure thread safety, the user's argument is always ignored and 
-    /// FI_THREAD_SAFE is used to ensure proper synchronization to fabric resources.
-    ///
-    /// # Arguments
-    /// 
-    /// * `self` - consumes self.
-    /// * `name` - the fabric_attr->prov_name value to set.  See efa, sockets, tcp, etc.
-    ///
-    /// # Returns
-    ///
-    /// self 
-    ///
-    /// # Errors
-    ///
-    /// None
-    pub fn domain_attr_threading(mut self, mode: u32) -> Self {
-        let hints = unsafe { self.hints.ptr.as_mut() };
-        let _ = mode;
-        // Request thread-safe mode to enable concurrent access from multiple threads
-        unsafe {(*(*hints).domain_attr).threading = ffi::fi_threading_FI_THREAD_SAFE };
-        self
-    }
-
-
     /// Builds a new FabricEndpoint using the EFA provider from libfabric.
     ///
     /// # Arguments
@@ -967,7 +942,6 @@ impl FabricEndpointBuilder {
             .mode(ffi::FI_CONTEXT)
             .ep_attr_type(ffi::fi_ep_type_FI_EP_RDM)
             .tx_attr_op_flags(ffi::FI_DELIVERY_COMPLETE)
-            .domain_attr_threading(ffi::fi_threading_FI_THREAD_SAFE)
             .build()
     }
 
@@ -987,8 +961,11 @@ impl FabricEndpointBuilder {
     /// Returns an error if something fails during the process of creating fabric resources
     /// necessary for the endpoint.  The user should analyze the arguments that were used
     /// when building the FabricEndpoint.
-    pub fn build(self) -> Result<FabricEndpoint> {
+    pub fn build(mut self) -> Result<FabricEndpoint> {
         unsafe {
+            let hints = self.hints.ptr.as_mut();
+            (*(*hints).domain_attr).threading = ffi::fi_threading_FI_THREAD_SAFE;
+
             let version = ffi::fi_version();
             let mut info_ptr = std::ptr::null_mut();
             let port_str = CString::new(self.port.to_string()).unwrap();
@@ -1034,7 +1011,6 @@ mod tests {
             .fabric_attr_prov_name(CString::new("sockets").unwrap())
             .caps(ffi::FI_MSG)
             .mode(ffi::FI_CONTEXT)
-            .domain_attr_threading(ffi::fi_threading_FI_THREAD_SAFE)
             .build()?;
 
 
@@ -1078,7 +1054,6 @@ mod tests {
             .fabric_attr_prov_name(CString::new("sockets").unwrap())
             .caps(ffi::FI_MSG)
             .mode(ffi::FI_CONTEXT)
-            .domain_attr_threading(ffi::fi_threading_FI_THREAD_SAFE)
             .build()?;
 
         // Connect and exchange addresses
