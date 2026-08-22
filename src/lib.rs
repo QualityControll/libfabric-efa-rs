@@ -223,61 +223,6 @@ enum CqReadResult {
     CqError()
 }
 
-pub struct SendBuffer {
-    data: Box<[u8]>,
-}
-
-impl SendBuffer {
-    pub fn new(data: Vec<u8>) -> Self {
-        Self {
-            data: data.into_boxed_slice(),
-        }
-    }
-
-    pub fn as_ptr(&self) -> *const u8 {
-        self.data.as_ptr()
-    }
-
-    pub fn len(&self) -> usize {
-        self.data.len()
-    }
-}
-
-pub struct RecvBuffer {
-    data: UnsafeCell<Box<[u8]>>,
-}
-
-// The buffer is only accessed by the caller after recv() completes.
-// While an operation is outstanding, libfabric owns the mutable access.
-unsafe impl Send for RecvBuffer {}
-unsafe impl Sync for RecvBuffer {}
-
-impl RecvBuffer {
-    pub fn new(size: usize) -> Self {
-        Self {
-            data: UnsafeCell::new(vec![0; size].into_boxed_slice()),
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        // This is read-only and doesn't conflict with libfabric
-        // writing the contents.
-        unsafe { (&*self.data.get()).len() }
-    }
-
-    pub fn as_slice(&self, len: usize) -> &[u8] {
-        assert!(len <= self.len());
-
-        unsafe {
-            &(&*self.data.get())[..len]
-        }
-    }
-
-    unsafe fn as_mut_ptr(&self) -> *mut u8 {
-        (*self.data.get()).as_mut_ptr()
-    }
-}
-
 enum Operation {
     Send {
         completion: oneshot::Sender<Result<Vec<u8>>>,
@@ -662,7 +607,7 @@ impl FabricEndpoint {
     ///
     /// # Returns
     ///
-    /// Returns the buffer filled with received data.
+    /// Returns the buffer filled with received data; and the len of the received data.
     ///
     /// # Errors
     ///
@@ -719,7 +664,7 @@ impl FabricEndpoint {
         //
         // The CQ now owns operation_ptr.
         //
-        // The caller can keep its Arc<RecvBuffer>, but MUST NOT access
+        // The caller can keep its Vec<u8>, but MUST NOT access
         // the buffer contents until this recv() completes.
         //
 
