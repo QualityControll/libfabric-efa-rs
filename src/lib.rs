@@ -27,7 +27,6 @@
 use eyre::{bail, Context, Result};
 use ofi_libfabric_sys::bindgen as ffi;
 use serde::{Deserialize, Serialize};
-use std::cell::UnsafeCell;
 use std::ffi::{CString, c_void};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::ptr;
@@ -223,16 +222,19 @@ enum CqReadResult {
     CqError()
 }
 
-enum Operation {
-    Send {
-        completion: oneshot::Sender<Result<Vec<u8>>>,
-        buffer: Vec<u8>,
-    },
+pub struct OpSuccess {
+    buf: Vec<u8>,
+    len: usize
+}
 
-    Recv {
-        completion: oneshot::Sender<Result<(Vec<u8>, usize)>>,
-        buffer: Vec<u8>,
-    },
+pub struct OpError {
+    buf: Vec<u8>,
+    err: i32
+}
+
+struct Operation {
+    completion: oneshot::Sender<Result<OpSuccess, OpError>>,
+    buffer: Vec<u8>,
 }
 
 
@@ -256,34 +258,17 @@ impl CompletionQueue {
     fn handle_completion(
         &self,
         entry: &ffi::fi_cq_data_entry) {
+
         let operation = unsafe {
         Box::from_raw(
             entry.op_context as *mut Operation)
         };
 
-        match *operation {
-            Operation::Send {
-                completion,
-                buffer: b,
-            } => {
-                let _ = completion.send(Ok(b));
-            }
+        let _ = operation.completion.send(Ok(OpSuccess {
+            buf: operation.buffer,
+            len: entry.len
+        }));
 
-            Operation::Recv {
-                completion,
-                buffer: b,
-            } => {
-                let _ = completion.send(Ok((b, entry.len)));
-            }
-        }
-
-        //
-        // `operation` is dropped here.
-        //
-        // That releases its Arc<SendBuffer>.
-        //
-        // If the caller still has an Arc reference, the buffer remains
-        // alive. Otherwise the buffer is freed here.
     }
 
     unsafe fn read_cq_entry(&self) -> CqReadResult {
@@ -502,7 +487,7 @@ impl FabricEndpoint {
         peer: PeerId,
         buffer: Vec<u8>) -> Result<Vec<u8>> {
 
-        let (tx, rx) = oneshot::channel::<Result<Vec<u8>>>();
+        let (tx, rx) = oneshot::channel::<Result<OpSuccess, OpError>>();
         let len = buffer.len();
         let ptr = buffer.as_ptr();
 
@@ -512,7 +497,7 @@ impl FabricEndpoint {
         // This guarantees that the buffer remains alive until the
         // libfabric operation has completed.
         //
-        let operation = Box::new(Operation::Send {
+        let operation = Box::new(Operation {
             completion: tx,
             buffer: buffer,
         });
@@ -570,8 +555,12 @@ impl FabricEndpoint {
         //
 
         match rx.await {
-            Ok(result) => result,
-
+            Ok(result) => {
+                match result {
+                    Ok(success) => Ok(success.buf),
+                    Err(e) => bail!("fi_send failed: {}", e.err)
+                }
+            },
             Err(e) => {
                 //
                 // The caller dropped/cancelled the future.
@@ -624,11 +613,11 @@ impl FabricEndpoint {
         &self,
         mut buffer: Vec<u8>,
     ) -> Result<(Vec<u8>, usize)> {
-        let (tx, rx) = oneshot::channel::<Result<(Vec<u8>, usize)>>();
+        let (tx, rx) = oneshot::channel::<Result<OpSuccess, OpError>>();
         let len = buffer.len(); 
         let ptr = buffer.as_mut_ptr().cast();
 
-        let operation = Box::new(Operation::Recv {
+        let operation = Box::new(Operation {
             completion: tx,
             buffer: buffer,
         });
@@ -669,8 +658,11 @@ impl FabricEndpoint {
         //
 
         match rx.await {
-            Ok(result) => result,
-
+            Ok(result) => 
+                match result {
+                    Ok(success) => Ok((success.buf, success.len)),
+                    Err(e) => bail!("fi_recv failed: {}", e.err)
+                }
             Err(e) => {
                 //
                 // The async future was cancelled.
