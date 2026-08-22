@@ -1155,7 +1155,7 @@ mod tests {
         println!("Waiting for ping messages...\n");
 
         // Ping-pong loop
-        let mut buf = vec![0; MESSAGE_SIZE];
+        let mut buf = vec![0u8; MESSAGE_SIZE];
 
         for i in 1..=PING_COUNT {
             // Receive ping
