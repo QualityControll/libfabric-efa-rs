@@ -271,6 +271,10 @@ impl CompletionQueue {
 
     }
 
+    fn handle_error(&self) {
+        todo!("handle OpError here, need to read the error queue and return error codes");
+    }
+
     unsafe fn read_cq_entry(&self) -> CqReadResult {
         let mut comp: ffi::fi_cq_data_entry = std::mem::zeroed();
         let ret = ffi::fi_cq_read(
@@ -282,6 +286,7 @@ impl CompletionQueue {
         } else if ret == EAGAIN_ERROR {
             return CqReadResult::CqErrorAgain();
         } else {
+            self.handle_error();
             return CqReadResult::CqError();        
         }
     }
