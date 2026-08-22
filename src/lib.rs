@@ -27,6 +27,7 @@
 use eyre::{bail, Context, Result};
 use ofi_libfabric_sys::bindgen as ffi;
 use serde::{Deserialize, Serialize};
+use std::cell::UnsafeCell;
 use std::ffi::{CString, c_void};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::ptr;
@@ -36,7 +37,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::unix::AsyncFd;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
-use tokio::sync::oneshot::{Sender};
 
 
 /// Default TCP port for control channel (address exchange)
@@ -223,6 +223,74 @@ enum CqReadResult {
     CqError()
 }
 
+pub struct SendBuffer {
+    data: Box<[u8]>,
+}
+
+impl SendBuffer {
+    pub fn new(data: Vec<u8>) -> Self {
+        Self {
+            data: data.into_boxed_slice(),
+        }
+    }
+
+    pub fn as_ptr(&self) -> *const u8 {
+        self.data.as_ptr()
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+}
+
+pub struct RecvBuffer {
+    data: UnsafeCell<Box<[u8]>>,
+}
+
+// The buffer is only accessed by the caller after recv() completes.
+// While an operation is outstanding, libfabric owns the mutable access.
+unsafe impl Send for RecvBuffer {}
+unsafe impl Sync for RecvBuffer {}
+
+impl RecvBuffer {
+    pub fn new(size: usize) -> Self {
+        Self {
+            data: UnsafeCell::new(vec![0; size].into_boxed_slice()),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        // This is read-only and doesn't conflict with libfabric
+        // writing the contents.
+        unsafe { (&*self.data.get()).len() }
+    }
+
+    pub fn as_slice(&self, len: usize) -> &[u8] {
+        assert!(len <= self.len());
+
+        unsafe {
+            &(&*self.data.get())[..len]
+        }
+    }
+
+    unsafe fn as_mut_ptr(&self) -> *mut u8 {
+        (*self.data.get()).as_mut_ptr()
+    }
+}
+
+enum Operation {
+    Send {
+        completion: oneshot::Sender<Result<Vec<u8>>>,
+        buffer: Vec<u8>,
+    },
+
+    Recv {
+        completion: oneshot::Sender<Result<(Vec<u8>, usize)>>,
+        buffer: Vec<u8>,
+    },
+}
+
+
 impl CompletionQueue {
     fn new(domain: &mut Domain) -> Result<Self> {
         let mut cq_attr: ffi::fi_cq_attr = unsafe { std::mem::zeroed() };
@@ -238,6 +306,39 @@ impl CompletionQueue {
         Ok(CompletionQueue {
             0: NonNull::new(cq).unwrap()
         })
+    }
+
+    fn handle_completion(
+        &self,
+        entry: &ffi::fi_cq_data_entry) {
+        let operation = unsafe {
+        Box::from_raw(
+            entry.op_context as *mut Operation)
+        };
+
+        match *operation {
+            Operation::Send {
+                completion,
+                buffer: b,
+            } => {
+                let _ = completion.send(Ok(b));
+            }
+
+            Operation::Recv {
+                completion,
+                buffer: b,
+            } => {
+                let _ = completion.send(Ok((b, entry.len)));
+            }
+        }
+
+        //
+        // `operation` is dropped here.
+        //
+        // That releases its Arc<SendBuffer>.
+        //
+        // If the caller still has an Arc reference, the buffer remains
+        // alive. Otherwise the buffer is freed here.
     }
 
     unsafe fn read_cq_entry(&self) -> CqReadResult {
@@ -260,9 +361,7 @@ impl CompletionQueue {
             let res = unsafe { self.read_cq_entry() };
             match res {
                 CqReadResult::CqReadSuccess(entry) => {
-                    let ctx = entry.op_context;
-                    let tx = unsafe { std::ptr::read(ctx as *mut Sender<usize>) };
-                    let _ = tx.send(entry.len);
+                    self.handle_completion(&entry);
                 },
                 CqReadResult::CqErrorAgain() => {
                     break;
@@ -452,27 +551,99 @@ impl FabricEndpoint {
     /// let mut buf = vec![0u8; 8192];
     /// buf = endpoint.send_to(peer, buf).await?;
     /// ```
-    pub async fn send_to(&self, peer: PeerId, buf: Vec<u8>) -> Result<Vec<u8>> {
-        let (mut tx, rx) = oneshot::channel::<usize>();
-        let op_ctx: *mut _ = &mut tx;
+    /// 
+    pub async fn send_to(
+        &self,
+        peer: PeerId,
+        buffer: Vec<u8>) -> Result<Vec<u8>> {
 
-        let ret = unsafe { ffi::fi_send(
-            self.0.ep.0.as_ptr(),
-            buf.as_ptr() as *const libc::c_void,
-            buf.len(),
-            ptr::null_mut(),
-            peer.0,
-            op_ctx as *mut c_void,
-        ) };
-        if ret == 0 {
-            std::mem::forget(tx);
-            let _ = rx.await?; 
-            Ok(buf)       
-        } else {
-            bail!("fi_send failed: {}", ret);
+        let (tx, rx) = oneshot::channel::<Result<Vec<u8>>>();
+        let len = buffer.len();
+        let ptr = buffer.as_ptr();
+
+        //
+        // The operation owns an Arc reference to the buffer.
+        //
+        // This guarantees that the buffer remains alive until the
+        // libfabric operation has completed.
+        //
+        let operation = Box::new(Operation::Send {
+            completion: tx,
+            buffer: buffer,
+        });
+
+        //
+        // Transfer ownership of the operation allocation to the
+        // outstanding libfabric operation.
+        //
+        // The CQ dispatcher will eventually reclaim this Box.
+        //
+        let operation_ptr = Box::into_raw(operation);
+
+        let ret = unsafe {
+            ffi::fi_send(
+                self.0.ep.0.as_ptr(),
+                ptr as *const c_void,
+                len,
+                std::ptr::null_mut(),
+                peer.0,
+                //
+                // Assuming FI_CONTEXT is not required:
+                //
+                // use our SendOperation allocation itself as the
+                // application context.
+                //
+                operation_ptr as *mut c_void,
+            )
+        };
+
+        if ret < 0 {
+            //
+            // fi_send() failed synchronously.
+            //
+            // No CQ completion will be generated, so the CQ cannot
+            // reclaim this operation.
+            //
+            // Reclaim it here.
+            //
+            unsafe {
+                drop(Box::from_raw(operation_ptr));
+            }
+            bail!("fi_send failed: {}", ret)
+        }
+
+        //
+        // fi_send() succeeded.
+        //
+        // Ownership of operation_ptr is now effectively transferred
+        // to the CQ dispatcher.
+        //
+        // DO NOT call Box::from_raw() here.
+        //
+        // The caller is free to drop its Arc<SendBuffer> at any time;
+        // the operation's Arc keeps the actual buffer alive.
+        //
+
+        match rx.await {
+            Ok(result) => result,
+
+            Err(e) => {
+                //
+                // The caller dropped/cancelled the future.
+                //
+                // The libfabric operation is still outstanding.
+                //
+                // Therefore we MUST NOT reclaim operation_ptr here.
+                //
+                // The CQ dispatcher will do that when the completion
+                // arrives.
+                //
+                Err(e.into())
+            }
         }
     }
 
+    
     /// Receives data from any peer.
     ///
     /// This function takes ownership of the buffer, receives data, and returns the
@@ -504,27 +675,73 @@ impl FabricEndpoint {
     /// let buf = endpoint.recv(buf).await?;
     /// // buf now contains received data
     /// ```
-    pub async fn recv(&self, mut buf: Vec<u8>) -> Result<Vec<u8>> {
-        let (mut tx, rx) = oneshot::channel::<usize>();
-        let op_ctx: *mut _ = &mut tx;
+    pub async fn recv(
+        &self,
+        mut buffer: Vec<u8>,
+    ) -> Result<(Vec<u8>, usize)> {
+        let (tx, rx) = oneshot::channel::<Result<(Vec<u8>, usize)>>();
+        let len = buffer.len(); 
+        let ptr = buffer.as_mut_ptr().cast();
 
-        let ret = unsafe { ffi::fi_recv(
-            self.0.ep.0.as_ptr(),
-            buf.as_mut_ptr() as *mut libc::c_void,
-            buf.len(),
-            ptr::null_mut(),
-            0,
-            op_ctx as *mut c_void,
-        ) };
+        let operation = Box::new(Operation::Recv {
+            completion: tx,
+            buffer: buffer,
+        });
 
-        if ret == 0 {
-            std::mem::forget(tx);
-            let _ = rx.await?;
-            Ok(buf)
-        } else {
-            bail!("fi_recv failed: {}", ret);
+        //
+        // libfabric will receive this pointer back in the CQ entry.
+        //
+        let operation_ptr = Box::into_raw(operation);
+
+        let ret = unsafe {
+            ffi::fi_recv(
+                self.0.ep.0.as_ptr(),
+                ptr, 
+                len,
+                std::ptr::null_mut(),
+                0,
+                operation_ptr.cast(),
+            )
+        };
+
+        if ret < 0 {
+            //
+            // No CQ completion will arrive, so reclaim the operation.
+            //
+            unsafe {
+                drop(Box::from_raw(operation_ptr));
+            }
+            bail!("fi_recv failed: {}", ret)
+        }
+
+        //
+        // Successful submission:
+        //
+        // The CQ now owns operation_ptr.
+        //
+        // The caller can keep its Arc<RecvBuffer>, but MUST NOT access
+        // the buffer contents until this recv() completes.
+        //
+
+        match rx.await {
+            Ok(result) => result,
+
+            Err(e) => {
+                //
+                // The async future was cancelled.
+                //
+                // The receive is still outstanding.
+                //
+                // DO NOT reclaim operation_ptr here.
+                //
+                // The CQ will reclaim it after completion.
+                //
+                Err(e.into())
+            }
         }
     }
+
+
 
     /// Retrieves the local endpoint address.
     ///
@@ -915,7 +1132,6 @@ impl FabricEndpointBuilder {
         let builder = FabricEndpointBuilder::new(); 
         builder.fabric_attr_prov_name(CString::new("efa").unwrap())
             .caps(ffi::FI_MSG)
-            .mode(ffi::FI_CONTEXT)
             .ep_attr_type(ffi::fi_ep_type_FI_EP_RDM)
             .tx_attr_op_flags(ffi::FI_DELIVERY_COMPLETE)
             .build()
@@ -986,7 +1202,6 @@ mod tests {
         let mut endpoint = FabricEndpointBuilder::new()
             .fabric_attr_prov_name(CString::new("sockets").unwrap())
             .caps(ffi::FI_MSG)
-            .mode(ffi::FI_CONTEXT)
             .build()?;
 
 
@@ -998,11 +1213,12 @@ mod tests {
         println!("Waiting for ping messages...\n");
 
         // Ping-pong loop
-        let mut buf = vec![0u8; MESSAGE_SIZE];
+        let mut buf = vec![0; MESSAGE_SIZE];
 
         for i in 1..=PING_COUNT {
             // Receive ping
-            buf = endpoint.recv(buf).await?;
+            let result = endpoint.recv(buf).await?;
+            buf = result.0;
 
             let message = String::from_utf8_lossy(&buf[..16]);
             let message = message.trim_end_matches('\0');
@@ -1029,7 +1245,6 @@ mod tests {
         let mut endpoint = FabricEndpointBuilder::new()
             .fabric_attr_prov_name(CString::new("sockets").unwrap())
             .caps(ffi::FI_MSG)
-            .mode(ffi::FI_CONTEXT)
             .build()?;
 
         // Connect and exchange addresses
@@ -1051,7 +1266,8 @@ mod tests {
             buf = endpoint.send_to(peer_id, buf).await?;
 
             // Receive pong
-            buf = endpoint.recv(buf).await?;
+            let result = endpoint.recv(buf).await?;
+            buf = result.0;
 
             let response = String::from_utf8_lossy(&buf[..16]);
             let response = response.trim_end_matches('\0');

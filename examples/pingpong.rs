@@ -48,7 +48,8 @@ async fn run_client(server_addr: &str) -> Result<()> {
         buf = endpoint.send_to(peer_id, buf).await?;
 
         // Receive pong
-        buf = endpoint.recv(buf).await?;
+        let result = endpoint.recv(buf).await?;
+        buf = result.0;
 
         let response = String::from_utf8_lossy(&buf[..16]);
         let response = response.trim_end_matches('\0');
@@ -81,7 +82,9 @@ async fn run_server() -> Result<()> {
 
     for i in 1..=PING_COUNT {
         // Receive ping
-        buf = endpoint.recv(buf).await?;
+        let result = endpoint.recv(buf).await?;
+        buf = result.0;
+
 
         let message = String::from_utf8_lossy(&buf[..16]);
         let message = message.trim_end_matches('\0');

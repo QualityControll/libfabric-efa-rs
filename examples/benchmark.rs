@@ -50,7 +50,8 @@ async fn run_benchmark(
             if is_client {
                 buffer = endpoint.send_to(peer, buffer).await?;
             } else {
-                buffer = endpoint.recv(buffer).await?;
+                let result = endpoint.recv(buffer).await?;
+                buffer = result.0;
             }
         }
 
@@ -60,7 +61,8 @@ async fn run_benchmark(
             if is_client {
                 buffer = endpoint.send_to(peer, buffer).await?;
             } else {
-                buffer = endpoint.recv(buffer).await?;
+                let result = endpoint.recv(buffer).await?;
+                buffer = result.0
             }
         }
         let elapsed = start.elapsed().as_secs_f64();
