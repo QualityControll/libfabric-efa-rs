@@ -65,14 +65,13 @@ use libfabric_rs::{AddressExchangeChannel, FabricEndpointBuilder};
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut endpoint = FabricEndpointBuilder::new()
-        .fabric_attr_prov_name(CString::new("sockets").unwrap())
+        .fabric_attr_prov_name(CString::new("efa").unwrap())
         .caps(ffi::FI_MSG)
-        .mode(ffi::FI_CONTEXT)
-        .domain_attr_threading(ffi::fi_threading_FI_THREAD_SAFE)
+        .ep_attr_type(ffi::fi_ep_type_FI_EP_RDM)
         .build()?;
     
     // Exchange addresses with server
-    let mut channel = AddressExchangeChannel::connect("192.168.1.100", None).await?;
+    let mut channel = AddressExchangeChannel::connect("127.0.0.1", None).await?;
     let peer_addr = channel.exchange(&endpoint, true).await?;
     let peer_id = endpoint.insert_peer(&peer_addr)?;
     
@@ -94,10 +93,9 @@ use libfabric_rs::{AddressExchangeChannel, FabricEndpointBuilder};
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut endpoint = FabricEndpointBuilder::new()
-        .fabric_attr_prov_name(CString::new("sockets").unwrap())
+        .fabric_attr_prov_name(CString::new("efa").unwrap())
         .caps(ffi::FI_MSG)
-        .mode(ffi::FI_CONTEXT)
-        .domain_attr_threading(ffi::fi_threading_FI_THREAD_SAFE)
+        .ep_attr_type(ffi::fi_ep_type_FI_EP_RDM)
         .build()?;
 
     // Exchange addresses with client
